@@ -1,16 +1,19 @@
 """
-Conservative price-only research backtest.
+Nifty 100 V4 conservative price-only backtest.
 
-Limitations:
-- Uses current Nifty 100 membership, creating survivorship bias.
-- Does not use point-in-time fundamentals or historical news.
-- Daily candles cannot reproduce the live first-15-minute breakout precisely.
+Important limitations:
+- Uses the current Nifty 100 list, which creates survivorship bias.
+- Does not use historical point-in-time fundamentals or news.
+- Daily candles cannot exactly reproduce the live first-15-minute breakout.
+- If both stop and target occur in the same daily candle, the stop is
+  conservatively assumed to have occurred first.
 """
 
 from __future__ import annotations
 
 import argparse
-from concurrent.futures import ThreadPoolExecutor, as_completed
+import time
+from typing import Any
 
 import pandas as pd
 import yfinance as yf
@@ -18,65 +21,248 @@ import yfinance as yf
 import config
 from data_provider import nifty100_symbols
 from indicators import rsi
-from utils import flatten_yf_columns
 
 
-MAX_WORKERS = 8
-DOWNLOAD_TIMEOUT = 15
+BATCH_SIZE = 8
+MAX_RETRIES = 3
+RETRY_DELAY_SECONDS = 5
+DOWNLOAD_TIMEOUT_SECONDS = 30
 
 
-def download_symbol(
-    symbol: str,
-    start: str,
-    end: str | None,
+def clean_symbols(symbols: list[str]) -> list[str]:
+    """Remove blanks and duplicate symbols while preserving order."""
+
+    cleaned: list[str] = []
+
+    for symbol in symbols:
+        symbol = str(symbol).strip()
+
+        if symbol and symbol not in cleaned:
+            cleaned.append(symbol)
+
+    return cleaned
+
+
+def split_batches(items: list[str], size: int) -> list[list[str]]:
+    """Split symbols into smaller download batches."""
+
+    return [
+        items[index : index + size]
+        for index in range(0, len(items), size)
+    ]
+
+
+def normalize_single_ticker_dataframe(
+    dataframe: pd.DataFrame,
 ) -> pd.DataFrame:
-    """Download one symbol with a timeout."""
+    """Convert one ticker's Yahoo data into standard OHLCV columns."""
 
-    df = yf.download(
-        symbol,
-        start=start,
-        end=end,
-        auto_adjust=True,
-        progress=False,
-        threads=False,
-        timeout=DOWNLOAD_TIMEOUT,
-    )
-
-    if df is None or df.empty:
+    if dataframe is None or dataframe.empty:
         return pd.DataFrame()
 
-    return flatten_yf_columns(df).dropna()
+    df = dataframe.copy()
+
+    if isinstance(df.columns, pd.MultiIndex):
+        if len(df.columns.levels) > 1:
+            try:
+                df.columns = df.columns.get_level_values(-1)
+            except Exception:
+                pass
+
+    required_columns = ["Open", "High", "Low", "Close", "Volume"]
+
+    if not all(column in df.columns for column in required_columns):
+        return pd.DataFrame()
+
+    df = df[required_columns].copy()
+
+    for column in required_columns:
+        df[column] = pd.to_numeric(df[column], errors="coerce")
+
+    df = df.dropna(
+        subset=["Open", "High", "Low", "Close", "Volume"]
+    )
+
+    df = df[~df.index.duplicated(keep="last")]
+    df = df.sort_index()
+
+    return df
 
 
-def test_symbol(
+def extract_symbol_dataframe(
+    downloaded: pd.DataFrame,
     symbol: str,
+    batch_size: int,
+) -> pd.DataFrame:
+    """Extract one ticker from a Yahoo multi-ticker response."""
+
+    if downloaded is None or downloaded.empty:
+        return pd.DataFrame()
+
+    try:
+        if batch_size == 1:
+            return normalize_single_ticker_dataframe(downloaded)
+
+        if not isinstance(downloaded.columns, pd.MultiIndex):
+            return pd.DataFrame()
+
+        # Expected because group_by="ticker" is used.
+        if symbol in downloaded.columns.get_level_values(0):
+            symbol_df = downloaded[symbol].copy()
+            return normalize_single_ticker_dataframe(symbol_df)
+
+        # Fallback for alternative yfinance column ordering.
+        if symbol in downloaded.columns.get_level_values(-1):
+            symbol_df = downloaded.xs(
+                symbol,
+                axis=1,
+                level=-1,
+                drop_level=True,
+            )
+            return normalize_single_ticker_dataframe(symbol_df)
+
+    except Exception as exc:
+        print(
+            f"{symbol}: extraction error: {exc}",
+            flush=True,
+        )
+
+    return pd.DataFrame()
+
+
+def download_batch(
+    symbols: list[str],
     start: str,
     end: str | None,
-    target: float,
-) -> list[dict]:
-    df = download_symbol(symbol, start, end)
+) -> dict[str, pd.DataFrame]:
+    """Download one small batch with retry protection."""
 
-    if len(df) < 260:
-        return []
+    result: dict[str, pd.DataFrame] = {
+        symbol: pd.DataFrame()
+        for symbol in symbols
+    }
 
-    df["change"] = df["Close"].pct_change() * 100
-    df["dma200"] = df["Close"].rolling(200).mean()
-    df["rsi"] = rsi(df["Close"])
-    df["avg_value"] = (
-        df["Close"] * df["Volume"]
+    ticker_argument: str | list[str]
+
+    if len(symbols) == 1:
+        ticker_argument = symbols[0]
+    else:
+        ticker_argument = symbols
+
+    for attempt in range(1, MAX_RETRIES + 1):
+        try:
+            print(
+                f"Downloading batch of {len(symbols)} symbols "
+                f"(attempt {attempt}/{MAX_RETRIES})...",
+                flush=True,
+            )
+
+            downloaded = yf.download(
+                tickers=ticker_argument,
+                start=start,
+                end=end,
+                auto_adjust=True,
+                progress=False,
+                threads=True,
+                group_by="ticker",
+                timeout=DOWNLOAD_TIMEOUT_SECONDS,
+            )
+
+            successful_count = 0
+
+            for symbol in symbols:
+                symbol_df = extract_symbol_dataframe(
+                    downloaded=downloaded,
+                    symbol=symbol,
+                    batch_size=len(symbols),
+                )
+
+                if not symbol_df.empty:
+                    result[symbol] = symbol_df
+                    successful_count += 1
+
+            if successful_count == len(symbols):
+                return result
+
+            print(
+                f"Batch returned {successful_count}/{len(symbols)} "
+                "usable symbols.",
+                flush=True,
+            )
+
+        except Exception as exc:
+            print(
+                f"Batch download failed: {type(exc).__name__}: {exc}",
+                flush=True,
+            )
+
+        if attempt < MAX_RETRIES:
+            wait_seconds = RETRY_DELAY_SECONDS * attempt
+
+            print(
+                f"Waiting {wait_seconds} seconds before retry...",
+                flush=True,
+            )
+
+            time.sleep(wait_seconds)
+
+    return result
+
+
+def prepare_indicators(df: pd.DataFrame) -> pd.DataFrame:
+    """Calculate all indicators required by the V4 setup."""
+
+    prepared = df.copy()
+
+    prepared["change"] = prepared["Close"].pct_change() * 100
+    prepared["dma200"] = prepared["Close"].rolling(200).mean()
+    prepared["rsi"] = rsi(prepared["Close"])
+
+    prepared["avg_value"] = (
+        prepared["Close"] * prepared["Volume"]
     ).rolling(20).mean()
 
-    average_volume = df["Volume"].rolling(20).mean()
-    df["volume_ratio"] = df["Volume"] / average_volume
+    prepared["average_volume"] = (
+        prepared["Volume"].rolling(20).mean()
+    )
 
-    trades: list[dict] = []
+    prepared["volume_ratio"] = (
+        prepared["Volume"] / prepared["average_volume"]
+    )
 
-    for i in range(252, len(df) - 1):
-        row = df.iloc[i]
-        next_day = df.iloc[i + 1]
+    return prepared
 
-        required_values = [
+
+def is_valid_number(value: Any) -> bool:
+    """Return True only for usable numeric values."""
+
+    try:
+        return not pd.isna(value)
+    except Exception:
+        return False
+
+
+def backtest_symbol(
+    symbol: str,
+    raw_df: pd.DataFrame,
+    target_pct: float,
+) -> list[dict[str, Any]]:
+    """Run the strategy rules for one stock."""
+
+    if raw_df is None or len(raw_df) < 260:
+        return []
+
+    df = prepare_indicators(raw_df)
+
+    trades: list[dict[str, Any]] = []
+
+    for index in range(252, len(df) - 1):
+        row = df.iloc[index]
+        next_day = df.iloc[index + 1]
+
+        values_to_check = [
             row["Close"],
+            row["Low"],
             row["change"],
             row["dma200"],
             row["rsi"],
@@ -88,44 +274,73 @@ def test_symbol(
             next_day["Close"],
         ]
 
-        if any(pd.isna(value) for value in required_values):
+        if not all(
+            is_valid_number(value)
+            for value in values_to_check
+        ):
             continue
 
-        distance_200dma = (
-            row["Close"] / row["dma200"] - 1
+        close_price = float(row["Close"])
+        signal_low = float(row["Low"])
+        dma200 = float(row["dma200"])
+        daily_change = float(row["change"])
+        stock_rsi = float(row["rsi"])
+        average_traded_value = float(row["avg_value"])
+        volume_ratio = float(row["volume_ratio"])
+
+        if dma200 <= 0:
+            continue
+
+        distance_from_dma200 = (
+            close_price / dma200 - 1
         ) * 100
 
-        previous_252_day_low = df["Low"].iloc[
-            i - 251 : i + 1
-        ].min()
+        previous_252_day_low = float(
+            df["Low"]
+            .iloc[index - 251 : index + 1]
+            .min()
+        )
 
-        new_52_week_low = (
-            row["Low"] <= previous_252_day_low * 1.002
+        near_new_52_week_low = (
+            signal_low
+            <= previous_252_day_low * 1.002
         )
 
         eligible = (
             config.MIN_DROP_PCT
-            <= row["change"]
+            <= daily_change
             <= config.MAX_DROP_PCT
-            and row["Close"] >= config.MIN_PRICE
-            and row["avg_value"]
+
+            and close_price
+            >= config.MIN_PRICE
+
+            and average_traded_value
             >= config.MIN_AVG_VALUE_20D
+
             and config.MIN_DISTANCE_200DMA
-            <= distance_200dma
+            <= distance_from_dma200
             <= config.MAX_DISTANCE_200DMA
+
             and config.MIN_RSI
-            <= row["rsi"]
+            <= stock_rsi
             <= config.MAX_RSI
-            and row["volume_ratio"]
+
+            and volume_ratio
             >= config.MIN_VOLUME_RATIO
-            and not new_52_week_low
+
+            and not near_new_52_week_low
         )
 
         if not eligible:
             continue
 
+        next_open = float(next_day["Open"])
+        next_high = float(next_day["High"])
+        next_low = float(next_day["Low"])
+        next_close = float(next_day["Close"])
+
         gap_pct = (
-            next_day["Open"] / row["Close"] - 1
+            next_open / close_price - 1
         ) * 100
 
         if not (
@@ -135,79 +350,214 @@ def test_symbol(
         ):
             continue
 
-        # Daily-candle proxy for the live first-15-minute condition.
+        # Daily candle approximation of the bullish first-15-minute rule.
         if (
             config.REQUIRE_BULLISH_FIRST_15M
-            and next_day["Close"] <= next_day["Open"]
+            and next_close <= next_open
         ):
             continue
 
-        entry_price = float(next_day["Open"])
+        entry_price = next_open
 
         stop_price = entry_price * (
             1 - config.STOP_LOSS_PCT / 100
         )
 
         target_price = entry_price * (
-            1 + target / 100
+            1 + target_pct / 100
         )
 
-        day_low = float(next_day["Low"])
-        day_high = float(next_day["High"])
-
-        # With daily candles, intraday order is unknown.
-        # Conservatively assume the stop occurred first.
-        if day_low <= stop_price and day_high >= target_price:
+        # Daily bars do not show whether stop or target happened first.
+        # Assume stop first to avoid overstating performance.
+        if (
+            next_low <= stop_price
+            and next_high >= target_price
+        ):
             exit_price = stop_price
-            reason = "both_assume_stop"
+            exit_reason = "both_assume_stop"
 
-        elif day_low <= stop_price:
+        elif next_low <= stop_price:
             exit_price = stop_price
-            reason = "stop"
+            exit_reason = "stop"
 
-        elif day_high >= target_price:
+        elif next_high >= target_price:
             exit_price = target_price
-            reason = "target"
+            exit_reason = "target"
 
         else:
-            exit_price = float(next_day["Close"])
-            reason = "time"
+            exit_price = next_close
+            exit_reason = "time"
+
+        return_pct = (
+            exit_price / entry_price - 1
+        ) * 100
 
         trades.append(
             {
                 "symbol": symbol,
-                "signal_date": str(df.index[i].date()),
-                "entry_date": str(df.index[i + 1].date()),
-                "entry_price": round(entry_price, 2),
-                "exit_price": round(exit_price, 2),
-                "return_pct": (
-                    exit_price / entry_price - 1
-                )
-                * 100,
-                "reason": reason,
+                "signal_date": str(
+                    df.index[index].date()
+                ),
+                "entry_date": str(
+                    df.index[index + 1].date()
+                ),
+                "signal_change_pct": round(
+                    daily_change,
+                    3,
+                ),
+                "rsi": round(stock_rsi, 2),
+                "distance_200dma_pct": round(
+                    distance_from_dma200,
+                    3,
+                ),
+                "volume_ratio": round(
+                    volume_ratio,
+                    3,
+                ),
+                "gap_pct": round(gap_pct, 3),
+                "entry_price": round(
+                    entry_price,
+                    2,
+                ),
+                "exit_price": round(
+                    exit_price,
+                    2,
+                ),
+                "return_pct": round(
+                    return_pct,
+                    4,
+                ),
+                "reason": exit_reason,
             }
         )
 
     return trades
 
 
-def run_symbol(
-    symbol: str,
-    start: str,
-    end: str | None,
-    target: float,
-) -> tuple[str, list[dict], str | None]:
-    try:
-        trades = test_symbol(
-            symbol=symbol,
-            start=start,
-            end=end,
-            target=target,
-        )
-        return symbol, trades, None
+def calculate_summary(
+    trades_df: pd.DataFrame,
+) -> None:
+    """Print performance statistics."""
 
-    except Exception as exc:
-        return symbol, [], str(exc)
+    if trades_df.empty:
+        print("\nNo trades found.", flush=True)
+        return
+
+    trades_df["entry_date_sort"] = pd.to_datetime(
+        trades_df["entry_date"],
+        errors="coerce",
+    )
+
+    trades_df.sort_values(
+        by=["entry_date_sort", "symbol"],
+        inplace=True,
+    )
+
+    trades_df.drop(
+        columns=["entry_date_sort"],
+        inplace=True,
+    )
+
+    trades_df.reset_index(
+        drop=True,
+        inplace=True,
+    )
+
+    returns = pd.to_numeric(
+        trades_df["return_pct"],
+        errors="coerce",
+    ).fillna(0.0)
+
+    equity_curve = (
+        1 + returns / 100
+    ).cumprod()
+
+    running_peak = equity_curve.cummax()
+
+    drawdown = (
+        equity_curve / running_peak - 1
+    )
+
+    winning_trades = int(
+        (returns > 0).sum()
+    )
+
+    losing_trades = int(
+        (returns < 0).sum()
+    )
+
+    flat_trades = int(
+        (returns == 0).sum()
+    )
+
+    win_rate = (
+        winning_trades / len(returns) * 100
+    )
+
+    compounded_return = (
+        equity_curve.iloc[-1] - 1
+    ) * 100
+
+    max_drawdown = (
+        drawdown.min() * 100
+    )
+
+    print(
+        "\n========== BACKTEST RESULT ==========",
+        flush=True,
+    )
+
+    print(
+        f"Trades: {len(trades_df)}",
+        flush=True,
+    )
+
+    print(
+        f"Winning trades: {winning_trades}",
+        flush=True,
+    )
+
+    print(
+        f"Losing trades: {losing_trades}",
+        flush=True,
+    )
+
+    print(
+        f"Flat trades: {flat_trades}",
+        flush=True,
+    )
+
+    print(
+        f"Win rate: {win_rate:.2f}%",
+        flush=True,
+    )
+
+    print(
+        f"Average/trade: {returns.mean():.3f}%",
+        flush=True,
+    )
+
+    print(
+        f"Compounded: {compounded_return:.2f}%",
+        flush=True,
+    )
+
+    print(
+        f"Max drawdown: {max_drawdown:.2f}%",
+        flush=True,
+    )
+
+    print("\nExit reasons:", flush=True)
+
+    print(
+        trades_df["reason"].value_counts(),
+        flush=True,
+    )
+
+    print(
+        "=====================================",
+        flush=True,
+    )
 
 
 def main() -> None:
@@ -215,152 +565,179 @@ def main() -> None:
 
     parser.add_argument(
         "--start",
-        default="2021-01-01",
+        default="2023-01-01",
+        help="Backtest start date: YYYY-MM-DD",
     )
 
     parser.add_argument(
         "--end",
         default=None,
+        help="Optional end date: YYYY-MM-DD",
     )
 
     parser.add_argument(
         "--target",
         type=float,
         default=2.0,
-    )
-
-    parser.add_argument(
-        "--workers",
-        type=int,
-        default=MAX_WORKERS,
+        help="Target percentage",
     )
 
     args = parser.parse_args()
 
-    symbols = list(dict.fromkeys(nifty100_symbols()))
+    symbols = clean_symbols(
+        list(nifty100_symbols())
+    )
 
-    print(f"Symbols: {len(symbols)}")
-    print(f"Start: {args.start}")
-    print(f"End: {args.end or 'latest'}")
-    print(f"Target: {args.target}%")
-    print(f"Parallel workers: {args.workers}")
+    print(
+        f"Total symbols: {len(symbols)}",
+        flush=True,
+    )
 
-    all_trades: list[dict] = []
-    completed = 0
-    failed = 0
+    print(
+        f"Period: {args.start} to "
+        f"{args.end or 'latest'}",
+        flush=True,
+    )
 
-    with ThreadPoolExecutor(
-        max_workers=args.workers
-    ) as executor:
+    print(
+        f"Target: {args.target}%",
+        flush=True,
+    )
 
-        futures = {
-            executor.submit(
-                run_symbol,
+    batches = split_batches(
+        symbols,
+        BATCH_SIZE,
+    )
+
+    all_trades: list[dict[str, Any]] = []
+    failed_symbols: list[str] = []
+
+    processed_symbols = 0
+
+    for batch_number, batch in enumerate(
+        batches,
+        start=1,
+    ):
+        print(
+            f"\nBatch {batch_number}/{len(batches)}: "
+            f"{', '.join(batch)}",
+            flush=True,
+        )
+
+        batch_data = download_batch(
+            symbols=batch,
+            start=args.start,
+            end=args.end,
+        )
+
+        for symbol in batch:
+            processed_symbols += 1
+            symbol_df = batch_data.get(
                 symbol,
-                args.start,
-                args.end,
-                args.target,
-            ): symbol
-            for symbol in symbols
-        }
+                pd.DataFrame(),
+            )
 
-        for future in as_completed(futures):
-            symbol, symbol_trades, error = future.result()
+            if symbol_df.empty:
+                failed_symbols.append(symbol)
 
-            completed += 1
-
-            if error:
-                failed += 1
                 print(
-                    f"[{completed}/{len(symbols)}] "
-                    f"{symbol}: ERROR — {error}"
+                    f"[{processed_symbols}/{len(symbols)}] "
+                    f"{symbol}: no usable data",
+                    flush=True,
                 )
-            else:
+
+                continue
+
+            try:
+                symbol_trades = backtest_symbol(
+                    symbol=symbol,
+                    raw_df=symbol_df,
+                    target_pct=args.target,
+                )
+
                 all_trades.extend(symbol_trades)
+
                 print(
-                    f"[{completed}/{len(symbols)}] "
-                    f"{symbol}: {len(symbol_trades)} trades"
+                    f"[{processed_symbols}/{len(symbols)}] "
+                    f"{symbol}: "
+                    f"{len(symbol_trades)} trades",
+                    flush=True,
                 )
 
-    output_file = (
+            except Exception as exc:
+                failed_symbols.append(symbol)
+
+                print(
+                    f"[{processed_symbols}/{len(symbols)}] "
+                    f"{symbol}: ERROR "
+                    f"{type(exc).__name__}: {exc}",
+                    flush=True,
+                )
+
+        # Small pause reduces Yahoo Finance rate limiting.
+        time.sleep(2)
+
+    output_filename = (
         f"backtest_target_{args.target}.csv"
     )
 
-    output = pd.DataFrame(all_trades)
+    output_df = pd.DataFrame(all_trades)
 
-    if output.empty:
-        output.to_csv(output_file, index=False)
+    if not output_df.empty:
+        output_df["entry_date_sort"] = pd.to_datetime(
+            output_df["entry_date"],
+            errors="coerce",
+        )
 
-        print("\nBacktest completed.")
-        print("No trades found.")
-        print(f"Failed symbols: {failed}")
-        print(f"CSV: {output_file}")
-        return
+        output_df.sort_values(
+            by=["entry_date_sort", "symbol"],
+            inplace=True,
+        )
 
-    output["entry_date"] = pd.to_datetime(
-        output["entry_date"]
+        output_df.drop(
+            columns=["entry_date_sort"],
+            inplace=True,
+        )
+
+        output_df.reset_index(
+            drop=True,
+            inplace=True,
+        )
+
+    output_df.to_csv(
+        output_filename,
+        index=False,
     )
 
-    output = output.sort_values(
-        ["entry_date", "symbol"]
-    ).reset_index(drop=True)
+    calculate_summary(output_df)
 
-    output["entry_date"] = output[
-        "entry_date"
-    ].dt.strftime("%Y-%m-%d")
-
-    output.to_csv(output_file, index=False)
-
-    equity = (
-        1 + output["return_pct"] / 100
-    ).cumprod()
-
-    running_peak = equity.cummax()
-    drawdown = equity / running_peak - 1
-
-    wins = output["return_pct"] > 0
-    losses = output["return_pct"] < 0
-
-    print("\n========== BACKTEST RESULT ==========")
-    print("Trades:", len(output))
     print(
-        "Winning trades:",
-        int(wins.sum()),
-    )
-    print(
-        "Losing trades:",
-        int(losses.sum()),
-    )
-    print(
-        "Win rate:",
-        round(wins.mean() * 100, 2),
-        "%",
-    )
-    print(
-        "Average/trade:",
-        round(output["return_pct"].mean(), 3),
-        "%",
-    )
-    print(
-        "Compounded:",
-        round((equity.iloc[-1] - 1) * 100, 2),
-        "%",
-    )
-    print(
-        "Max drawdown:",
-        round(drawdown.min() * 100, 2),
-        "%",
-    )
-    print(
-        "Failed symbols:",
-        failed,
+        f"\nCSV saved: {output_filename}",
+        flush=True,
     )
 
-    print("\nExit reasons:")
-    print(output["reason"].value_counts())
+    print(
+        f"Successful symbols: "
+        f"{len(symbols) - len(failed_symbols)}",
+        flush=True,
+    )
 
-    print("\nCSV saved as:", output_file)
-    print("=====================================")
+    print(
+        f"Failed symbols: {len(failed_symbols)}",
+        flush=True,
+    )
+
+    if failed_symbols:
+        print(
+            "Failed symbol list: "
+            + ", ".join(failed_symbols),
+            flush=True,
+        )
+
+    print(
+        "\nBacktest completed.",
+        flush=True,
+    )
 
 
 if __name__ == "__main__":
