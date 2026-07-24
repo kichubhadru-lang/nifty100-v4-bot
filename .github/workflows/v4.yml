@@ -1,0 +1,108 @@
+name: Nifty 100 V4 Bot
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "Choose bot mode"
+        required: true
+        default: "scan"
+        type: choice
+        options:
+          - scan
+          - confirm
+          - close
+          - report
+          - learn
+
+  schedule:
+    # GitHub uses UTC time
+
+    # 4:10 PM IST
+    - cron: "40 10 * * 1-5"
+
+    # 9:37 AM IST
+    - cron: "7 4 * * 1-5"
+
+    # 3:15 PM IST
+    - cron: "45 9 * * 1-5"
+
+    # Friday 5:30 PM IST
+    - cron: "0 12 * * 5"
+
+    # Monthly learning on the 1st at 6:00 PM IST
+    - cron: "30 12 1 * *"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: nifty100-v4-bot
+  cancel-in-progress: false
+
+jobs:
+  run-bot:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install libraries
+        run: pip install -r requirements.txt
+
+      - name: Choose bot mode
+        id: mode
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            MODE="${{ inputs.mode }}"
+
+          elif [ "${{ github.event.schedule }}" = "40 10 * * 1-5" ]; then
+            MODE="scan"
+
+          elif [ "${{ github.event.schedule }}" = "7 4 * * 1-5" ]; then
+            MODE="confirm"
+
+          elif [ "${{ github.event.schedule }}" = "45 9 * * 1-5" ]; then
+            MODE="close"
+
+          elif [ "${{ github.event.schedule }}" = "0 12 * * 5" ]; then
+            MODE="report"
+
+          else
+            MODE="learn"
+          fi
+
+          echo "Selected mode: $MODE"
+          echo "value=$MODE" >> "$GITHUB_OUTPUT"
+
+      - name: Run bot
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python main.py "${{ steps.mode.outputs.value }}"
+
+      - name: Save bot data
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add data/
+
+          if git diff --cached --quiet; then
+            echo "No bot data changes"
+          else
+            git commit -m "Update V4 bot state"
+            git pull --rebase
+            git push
+          fi
