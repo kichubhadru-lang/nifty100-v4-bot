@@ -93,19 +93,24 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: python main.py "${{ steps.mode.outputs.value }}"
 
-      - name: Run 2 percent backtest
+      - name: Run professional backtest
         if: steps.mode.outputs.value == 'backtest'
-        run: python backtest.py --start 2021-01-01 --target 2
+        run: |
+          python -u backtest.py \
+            --start 2023-01-01 \
+            --target 2 \
+            --capital 100000 \
+            --risk 1 \
+            --max-allocation 100 \
+            --cost 0.30
 
       - name: Upload backtest results
         if: steps.mode.outputs.value == 'backtest'
         uses: actions/upload-artifact@v4
         with:
-          name: nifty100-v4-backtest-results
-          path: |
-            backtest*.csv
-            data/backtest*.csv
-          if-no-files-found: warn
+          name: nifty100-v4-professional-backtest
+          path: data/backtest/
+          if-no-files-found: error
           retention-days: 30
 
       - name: Save bot data
