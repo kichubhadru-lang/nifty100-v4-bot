@@ -1,4 +1,11 @@
 {
   "date": "2026-07-24",
-  "candidates": []
+  "market": {
+    "allowed": true,
+    "nifty_change_pct": -0.53,
+    "nifty_above_50dma": true,
+    "vix": 13.48
+  },
+  "candidates": [],
+  "errors": []
 }
