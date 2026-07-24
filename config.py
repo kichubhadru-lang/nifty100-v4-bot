@@ -14,10 +14,10 @@ WEIGHTS_FILE = DATA_DIR / "adaptive_weights.json"
 MIN_DROP_PCT = -6.0
 MAX_DROP_PCT = -2.5
 MIN_PRICE = 100.0
-MIN_AVG_VALUE_20D = 500_000_000       # ₹50 crore
-MIN_MARKET_CAP = 200_000_000_000      # ₹20,000 crore
+MIN_AVG_VALUE_20D = 500_000_000
+MIN_MARKET_CAP = 200_000_000_000
 MIN_ROE = 0.15
-MAX_DEBT_TO_EQUITY_YAHOO = 50.0       # Yahoo convention: 50 ≈ 0.50
+MAX_DEBT_TO_EQUITY_YAHOO = 50.0
 MIN_PROFIT_MARGIN = 0.0
 MIN_DISTANCE_200DMA = -5.0
 MAX_DISTANCE_200DMA = 20.0
@@ -39,11 +39,16 @@ MAX_GAP_PCT = 2.0
 REQUIRE_BULLISH_FIRST_15M = True
 MAX_TRADES_PER_DAY = 1
 
+# Portfolio and position sizing
+PAPER_CAPITAL = 100_000.0
+RISK_PER_TRADE_PCT = 1.0
+MAX_CAPITAL_ALLOCATION_PCT = 100.0
+ESTIMATED_ROUND_TRIP_COST_PCT = 0.30
+
 # Trade management
 TARGET_1_PCT = 2.0
 TARGET_2_PCT = 3.0
 STOP_LOSS_PCT = 1.25
-RISK_PER_TRADE_PCT = 0.50
 TIME_EXIT_HOUR = 15
 TIME_EXIT_MINUTE = 15
 
@@ -55,16 +60,28 @@ BASE_WEIGHTS = {
     "liquidity": 10.0,
     "news": 10.0,
 }
+
 MIN_COMPLETED_TRADES_TO_LEARN = 30
 LEARNING_WINDOW = 100
 MAX_WEIGHT_DEVIATION_PCT = 20.0
 LEARNING_RATE = 0.15
 MIN_BUCKET_TRADES = 8
 
-# Conservative blocked-news terms. This is only a guardrail, not full news analysis.
 BLOCKED_NEWS_TERMS = {
-    "fraud", "sebi action", "investigation", "default", "bankruptcy",
-    "insolvency", "downgrade", "promoter pledge", "resignation",
-    "accounting irregularity", "raid", "penalty", "result miss",
-    "weak guidance", "block deal", "stake sale",
+    "fraud",
+    "sebi action",
+    "investigation",
+    "default",
+    "bankruptcy",
+    "insolvency",
+    "downgrade",
+    "promoter pledge",
+    "resignation",
+    "accounting irregularity",
+    "raid",
+    "penalty",
+    "result miss",
+    "weak guidance",
+    "block deal",
+    "stake sale",
 }
