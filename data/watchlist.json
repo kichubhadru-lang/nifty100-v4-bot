@@ -1,11 +1,44 @@
 {
-  "date": "2026-07-27",
+  "date": "2026-07-28",
   "market": {
     "allowed": true,
-    "nifty_change_pct": 0.53,
+    "nifty_change_pct": -0.04,
     "nifty_above_50dma": true,
-    "vix": 12.66
+    "vix": 12.56
   },
-  "candidates": [],
+  "candidates": [
+    {
+      "symbol": "CUMMINSIND.NS",
+      "close": 5455.5,
+      "change_pct": -3.09,
+      "distance_200dma": 14.4,
+      "avg_value_20d": 2301440620.2555175,
+      "volume_ratio": 1.37,
+      "rsi": 44.67,
+      "new_52w_low": false,
+      "market_cap": 1512264564736,
+      "roe": 0.29455,
+      "debt_to_equity": 0.431,
+      "profit_margin": 0.19449,
+      "revenue_growth": 0.219,
+      "earnings_growth": 0.227,
+      "component_scores": {
+        "fundamental": 98.08,
+        "technical": 94.66,
+        "market": 99.0,
+        "liquidity": 100.0,
+        "news": 100.0
+      },
+      "score": 97.62,
+      "weights": {
+        "fundamental": 30.0,
+        "technical": 30.0,
+        "market": 20.0,
+        "liquidity": 10.0,
+        "news": 10.0
+      },
+      "blocked_headlines": []
+    }
+  ],
   "errors": []
 }
