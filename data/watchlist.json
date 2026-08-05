@@ -1,10 +1,10 @@
 {
-  "date": "2026-08-04",
+  "date": "2026-08-05",
   "market": {
     "allowed": true,
-    "nifty_change_pct": -0.64,
+    "nifty_change_pct": 0.04,
     "nifty_above_50dma": true,
-    "vix": 12.19
+    "vix": 12.06
   },
   "candidates": [],
   "errors": []
