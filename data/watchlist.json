@@ -1,11 +1,76 @@
 {
-  "date": "2026-11-04",
+  "date": "2026-11-05",
   "market": {
     "allowed": true,
-    "nifty_change_pct": 0.63,
+    "nifty_change_pct": 2.4,
     "nifty_above_50dma": true,
-    "vix": 15.19
+    "vix": 15.58
   },
-  "candidates": [],
+  "candidates": [
+    {
+      "symbol": "SOLARINDS.NS",
+      "close": 18520.0,
+      "change_pct": -4.5,
+      "distance_200dma": 8.83,
+      "avg_value_20d": 2867398377.25,
+      "volume_ratio": 2.02,
+      "rsi": 41.03,
+      "new_52w_low": false,
+      "market_cap": 1675875844096,
+      "roe": 0.35127,
+      "debt_to_equity": 22.384,
+      "profit_margin": 0.177,
+      "revenue_growth": 0.69,
+      "earnings_growth": 0.789,
+      "component_scores": {
+        "fundamental": 90.55,
+        "technical": 88.06,
+        "market": 93.68,
+        "liquidity": 100.0,
+        "news": 100.0
+      },
+      "score": 92.32,
+      "weights": {
+        "fundamental": 30.0,
+        "technical": 30.0,
+        "market": 20.0,
+        "liquidity": 10.0,
+        "news": 10.0
+      },
+      "blocked_headlines": []
+    },
+    {
+      "symbol": "CGPOWER.NS",
+      "close": 808.8,
+      "change_pct": -3.88,
+      "distance_200dma": -0.82,
+      "avg_value_20d": 2651860483.0508637,
+      "volume_ratio": 1.84,
+      "rsi": 42.37,
+      "new_52w_low": false,
+      "market_cap": 1274257211392,
+      "roe": 0.16371,
+      "debt_to_equity": 1.885,
+      "profit_margin": 0.1004,
+      "revenue_growth": 0.301,
+      "earnings_growth": 0.434,
+      "component_scores": {
+        "fundamental": 57.8,
+        "technical": 92.26,
+        "market": 93.68,
+        "liquidity": 100.0,
+        "news": 100.0
+      },
+      "score": 83.75,
+      "weights": {
+        "fundamental": 30.0,
+        "technical": 30.0,
+        "market": 20.0,
+        "liquidity": 10.0,
+        "news": 10.0
+      },
+      "blocked_headlines": []
+    }
+  ],
   "errors": []
 }
