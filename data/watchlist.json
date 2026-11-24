@@ -1,11 +1,4 @@
 {
-  "date": "2026-11-23",
-  "market": {
-    "allowed": true,
-    "nifty_change_pct": 1.12,
-    "nifty_above_50dma": true,
-    "vix": 17.32
-  },
-  "candidates": [],
-  "errors": []
+  "date": "2026-11-24",
+  "candidates": []
 }
